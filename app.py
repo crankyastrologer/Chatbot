@@ -1,16 +1,11 @@
+from flask import Flask, render_template, request,  jsonify
 import mmap
-import argparse
+import pickle
 import torch
+import random
 import torch_directml
 import torch.nn as nn
-import pickle
-import torch.nn.functional as F
-import random
-
-# using directml as I have AMD Gpu You can use
 device = torch_directml.device()
-# device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
 block_size = 32
 batch_size = 64
 max_iters = 3000
@@ -22,22 +17,19 @@ n_embd = 384
 dropout = 0.2
 n_layer = 8
 
-# for getting the tokens
 chars = ""
-with open("vocab.txt", 'r', encoding='utf8') as f:
+with open("chatbot/vocab.txt", 'r', encoding='utf8') as f:
     text = f.read()
     chars = sorted(set(text))
 
 vocab_size = len(chars)
-string_to_int = {ch: i for i, ch in enumerate(chars)}
-int_to_string = {i: ch for i, ch in enumerate(chars)}
 
-
-encode = lambda s: [string_to_int[c] for c in s]
+string_to_int = {ch:i for i,ch in enumerate(chars)}
+int_to_string = {i:ch for i,ch in enumerate(chars)}
+encode = lambda s: [string_to_int[c]for c in s]
 decode = lambda l: ''.join([int_to_string[i] for i in l])
 
 
-# for getting random chunk for training
 def get_random_chunk(split):
     filename = 'output_train.txt' if split == 'train' else 'output_val.txt'
     with open(filename, 'rb') as f:
@@ -51,7 +43,6 @@ def get_random_chunk(split):
     return data
 
 
-
 def get_batch(split):
     data = get_random_chunk(split)
     ix = torch.randint(len(data) - block_size, (batch_size,))
@@ -59,6 +50,24 @@ def get_batch(split):
     y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
     x, y = x.to(device), y.to(device)
     return x, y
+
+
+@torch.no_grad()
+def estimate_loss():
+    out = {}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            X, Y = get_batch(split)
+            logits, loss = model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
+
+
+import torch.nn.functional as F
 
 
 class Head(nn.Module):
@@ -204,17 +213,37 @@ class GPTLanguageModel(nn.Module):
 
 
 model = GPTLanguageModel(vocab_size)
-print('loading model parameters...')
-with open('model-01-chat.pkl', 'rb') as f:
-    model = pickle.load(f)
-print('loaded successfully!')
-m = model.to(device)
+def load_model():
+    global model
+    model = GPTLanguageModel(vocab_size)
+    print('loading model parameters...')
+    with open('chatbot/model-01-chat.pkl', 'rb') as f:
+        model = pickle.load(f)
+    print('loaded successfully!')
+    model = model.to(device)
 
+def getchat(prompt):
 
-
-
-while True:
-    prompt = input("Prompt:\n")
     context = torch.tensor(encode(prompt), dtype=torch.long, device=device)
-    generated_chars = decode(m.generate(context.unsqueeze(0), max_new_tokens=150)[0].tolist())
-    print(f'Completion:\n{generated_chars}')
+    generated_chars = decode(model.generate(context.unsqueeze(0), max_new_tokens=150)[0].tolist())
+    return f'{generated_chars}'
+
+
+
+app = Flask(__name__)
+load_model()
+
+@app.route('/',methods=['GET','POST'])
+def index():
+    if request.method == 'POST':
+        user_input = request.form['prompt']
+        response = get_chatbot_response(user_input)
+        return render_template('index.html', user_input=user_input, response=response)
+    return render_template('index.html')
+
+def get_chatbot_response(prompt):
+    # You can replace this with your actual chatbot logic
+    response = getchat(prompt)
+    return response
+
+app.run(debug=True)
